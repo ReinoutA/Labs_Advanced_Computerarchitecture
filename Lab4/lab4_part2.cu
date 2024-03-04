@@ -1,162 +1,261 @@
-﻿#include <iostream>
+#include <iostream>
 #include <fstream>
-#include <vector>
 #include <cuda_runtime.h>
 
+const int MAX_N = 78; // Maximum array size
+const int TILE_SIZE = 78;
+const int NUM_MEASUREMENT = 1000;
+const int THREADS_PER_BLOCK = 16;
 
-__global__ void grayscale_coalesced(unsigned char* image, int width, int height) {
-    int idx_start = (blockIdx.x * blockDim.x + threadIdx.x) * 3;
-    int threadCount = gridDim.x * blockDim.x;
+// Matrix multiplication kernel using global memory only
+__global__ void matrixMulGlobal(float* A, float* B, float* C, int N) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for (int idx = idx_start; idx < width * height * 3; idx += threadCount * 3) {
-        unsigned char value = (image[idx] + image[idx + 1] + image[idx + 2]) / 3;
-        image[idx] = value;
-        image[idx + 1] = value;
-        image[idx + 2] = value;
+    float sum = 0.0f;
+    for (int k = 0; k < N; ++k) {
+        sum += A[i * N + k] * B[k * N + j];
     }
+
+    C[i * N + j] = sum;
 }
 
-__global__ void grayscale_notCoalesced(unsigned char* image, int width, int height) {
-    int idx_start = (blockIdx.x * blockDim.x + threadIdx.x) * 3;
-    int threadCount = gridDim.x * blockDim.x;
+// Matrix multiplication kernel using global and shared memory
+__global__ void matrixMulGlobalShared(float* A, float* B, float* C, int N) {
+    __shared__ float tileA[TILE_SIZE][TILE_SIZE];
+    __shared__ float tileB[TILE_SIZE][TILE_SIZE];
 
-    for (int idx = idx_start; idx < width * height; idx += threadCount) {
-        int pixelIdx = idx;
-        unsigned char value = (image[pixelIdx] + image[pixelIdx + width * height] + image[pixelIdx + 2 * width * height]) / 3;
-        image[pixelIdx] = value;
-        image[pixelIdx + width * height] = value;
-        image[pixelIdx + 2 * width * height] = value;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum = 0.0f;
+
+    for (int tileIndex = 0; tileIndex < N / TILE_SIZE; ++tileIndex) {
+        tileA[threadIdx.y][threadIdx.x] = A[i * N + tileIndex * TILE_SIZE + threadIdx.x];
+        tileB[threadIdx.y][threadIdx.x] = B[j + N * (tileIndex * TILE_SIZE + threadIdx.y)];
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            sum += tileA[threadIdx.y][k] * tileB[k][threadIdx.x];
+        }
+
+        __syncthreads();
     }
+
+    C[i * N + j] = sum;
 }
 
+// Declare constant memory
+__constant__ float c_A[MAX_N * MAX_N];
+__constant__ float c_B[MAX_N * MAX_N];
 
-void readPPM(const std::string& filename, std::vector<unsigned char>& image, int& width, int& height) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Error opening file: " << filename << std::endl;
-        exit(EXIT_FAILURE);
+// Matrix multiplication kernel using global and constant memory
+__global__ void matrixMulGlobalConstant(float* C, int N) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum = 0.0f;
+    for (int k = 0; k < N; ++k) {
+        sum += c_A[i * N + k] * c_B[k * N + j];
     }
 
-    std::string format;
-    file >> format >> width >> height;
-    int maxVal;
-    file >> maxVal;
-
-    image.resize(width * height * 3);
-    file.read(reinterpret_cast<char*>(image.data()), image.size());
-    file.close();
+    C[i * N + j] = sum;
 }
 
-void writePPM(const std::string& filename, const std::vector<unsigned char>& image, int width, int height) {
-    std::ofstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Error opening file for writing: " << filename << std::endl;
-        exit(EXIT_FAILURE);
-    }
+void testKernels() {
 
-    file << "P6\n" << width << " " << height << "\n255\n";
-    file.write(reinterpret_cast<const char*>(image.data()), image.size());
-    file.close();
+    double n = 72382.413651;
+    int len;
+
+    len = sizeof(n);
+    printf("%d\n", len);
+
+
+    const int N = 2;
+
+    float h_A[N * N] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float h_B[N * N] = {5.0f, 6.0f, 7.0f, 8.0f};
+    float h_C_global[N * N] = {0.0f};
+    float h_C_shared[N * N] = {0.0f};
+    float h_C_constant[N * N] = {0.0f};
+
+    float *d_A, *d_B, *d_C_global, *d_C_shared, *d_C_constant;
+    cudaMalloc((void**)&d_A, N * N * sizeof(float));
+    cudaMalloc((void**)&d_B, N * N * sizeof(float));
+    cudaMalloc((void**)&d_C_global, N * N * sizeof(float));
+    cudaMalloc((void**)&d_C_shared, N * N * sizeof(float));
+    cudaMalloc((void**)&d_C_constant, N * N * sizeof(float));
+
+    cudaMemcpy(d_A, h_A, N * N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, N * N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(c_A, h_A, N * N * sizeof(float));
+    cudaMemcpyToSymbol(c_B, h_B, N * N * sizeof(float));
+
+    dim3 blockDim(THREADS_PER_BLOCK, THREADS_PER_BLOCK);
+    dim3 gridDim((N + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y);
+
+
+    matrixMulGlobal<<<gridDim, blockDim>>>(d_A, d_B, d_C_global, N);
+    matrixMulGlobalShared<<<gridDim, blockDim>>>(d_A, d_B, d_C_shared, N);
+    matrixMulGlobalConstant<<<gridDim, blockDim>>>(d_C_constant, N);
+
+    // Copy results from device to host
+    cudaMemcpy(h_C_global, d_C_global, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(d_C_shared, d_C_global, N * N * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(h_C_shared, d_C_shared, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_C_constant, d_C_constant, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+
+    std::cout << "Global Memory Result:" << std::endl;
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            std::cout << h_C_global[i * N + j] << "\t";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+
+    std::cout << "Shared Memory Result:" << std::endl;
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            std::cout << h_C_shared[i * N + j] << "\t";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+
+    std::cout << "Constant Memory Result:" << std::endl;
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            std::cout << h_C_constant[i * N + j] << "\t";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C_global);
+    cudaFree(d_C_shared);
+    cudaFree(d_C_constant);
 }
 
 
 int main() {
-    // Specify input and output file names
-    std::string inputFilename = "C:/Users/vanni/source/repos/CUDA_Lab3/image-import/input_image.ppm";
-    std::string outputFilename1 = "output_image1.ppm";
-    std::string outputFilename2 = "output_image2.ppm";
-    std::string csvFilename = "C:/Users/vanni/Desktop/School/times.csv";
-
-    // Read input image
-    int width, height;
-    std::vector<unsigned char> h_image;
-    readPPM(inputFilename, h_image, width, height);
-
-    // Allocate memory for the images on the device
-    unsigned char* d_image1;
-    unsigned char* d_image2;
-    cudaMalloc((void**)&d_image1, h_image.size());
-    cudaMalloc((void**)&d_image2, h_image.size());
-    cudaMemcpy(d_image1, h_image.data(), h_image.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_image2, h_image.data(), h_image.size(), cudaMemcpyHostToDevice);
-
-    // Specify the block and grid dimensions
-    int numBlocks = 4;
+    // Test the kernels with a small input size
+    testKernels();
 
     // Open CSV file for writing
-    std::ofstream csvFile(csvFilename);
-    if (!csvFile.is_open()) {
-        std::cerr << "Error opening CSV file for writing." << std::endl;
-        return 1;
-    }
+    std::ofstream csvFile("execution_times.csv");
+    csvFile << "ArraySize,GlobalMemoryTime(ms),SharedMemoryTime(ms),ConstantMemoryTime(ms)\n";
 
-    // Write CSV header
-    csvFile << "Block Size,Time (Coalesced),Time (Not Coalesced)\n";
+    for (int currentN = 1; currentN <= MAX_N; currentN++) {
+        // Initialize matrices on the host
+        float* h_A = new float[currentN * currentN];
+        float* h_B = new float[currentN * currentN];
+        float* h_C_global = new float[currentN * currentN];
+        float* h_C_shared = new float[currentN * currentN];
+        float* h_C_constant = new float[currentN * currentN];
 
-    // Loop over different block sizes
-    for (int blockSize = 1; blockSize < 1024; blockSize++) {
-        float milliseconds1_Total = 0;
-        float milliseconds2_Total = 0;
-        int amountOfTries = 10;
-
-        std::cout << blockSize << std::endl;
-        for (int i = 0; i < amountOfTries; i++) {
-            // Timing variables
-            cudaEvent_t start1, stop1, start2, stop2;
-            cudaEventCreate(&start1);
-            cudaEventCreate(&stop1);
-            cudaEventCreate(&start2);
-            cudaEventCreate(&stop2);
-
-            // Record start time for kernel 1
-            cudaEventRecord(start1);
-
-            // Launch the kernel for image processing operation 1 (e.g., grayscale)
-            grayscale_coalesced << <numBlocks, blockSize >> > (d_image1, width, height);
-
-            // Record stop time for kernel 1
-            cudaEventRecord(stop1);
-            cudaEventSynchronize(stop1);
-
-            // Calculate and print the elapsed time for kernel 1
-            float milliseconds1 = 0;
-            cudaEventElapsedTime(&milliseconds1, start1, stop1);
-            milliseconds1_Total += milliseconds1;
-
-            // Record start time for kernel 2
-            cudaEventRecord(start2);
-
-            // Launch the kernel for image processing operation 2 (e.g., invertImageKernel)
-            grayscale_notCoalesced << <numBlocks, blockSize >> > (d_image2, width, height);
-
-            // Record stop time for kernel 2
-            cudaEventRecord(stop2);
-            cudaEventSynchronize(stop2);
-
-            // Calculate and print the elapsed time for kernel 2
-            float milliseconds2 = 0;
-            cudaEventElapsedTime(&milliseconds2, start2, stop2);
-            milliseconds2_Total += milliseconds2;
+        // Initialize matrices with random values
+        for (int i = 0; i < currentN * currentN; ++i) {
+            h_A[i] = static_cast<float>(rand()) / RAND_MAX;
+            h_B[i] = static_cast<float>(rand()) / RAND_MAX;
         }
-        csvFile << blockSize << "," << milliseconds1_Total/amountOfTries << "," << milliseconds2_Total/amountOfTries << "\n";
+
+        // Allocate memory on the device
+        float *d_A, *d_B, *d_C_global, *d_C_shared, *d_C_constant;
+        cudaMalloc((void**)&d_A, currentN * currentN * sizeof(float));
+        cudaMalloc((void**)&d_B, currentN * currentN * sizeof(float));
+        cudaMalloc((void**)&d_C_global, currentN * currentN * sizeof(float));
+        cudaMalloc((void**)&d_C_shared, currentN * currentN * sizeof(float));
+        cudaMalloc((void**)&d_C_constant, currentN * currentN * sizeof(float));
+
+        // Copy matrices from host to device
+        cudaMemcpy(d_A, h_A, currentN * currentN * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_B, h_B, currentN * currentN * sizeof(float), cudaMemcpyHostToDevice);
+
+        // Set up grid and block dimensions
+        dim3 blockDim(THREADS_PER_BLOCK, THREADS_PER_BLOCK);
+        dim3 gridDim((currentN + blockDim.x - 1) / blockDim.x, (currentN + blockDim.y - 1) / blockDim.y);
+
+        // Measure time for global memory only
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+
+        float globalTotalTime = 0.0f;
+        for (int i = 0; i < NUM_MEASUREMENT; ++i) {
+            cudaEventRecord(start);
+            matrixMulGlobal<<<gridDim, blockDim>>>(d_A, d_B, d_C_global, currentN);
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+
+            float globalTime;
+            cudaEventElapsedTime(&globalTime, start, stop);
+
+            globalTotalTime += globalTime;
+        }
+
+        float globalAverageTime = globalTotalTime / NUM_MEASUREMENT;
+
+        // Measure time for global and shared memory
+        float sharedTotalTime = 0.0f;
+        for (int i = 0; i < NUM_MEASUREMENT; ++i) {
+            cudaEventRecord(start);
+            matrixMulGlobalShared<<<gridDim, blockDim>>>(d_A, d_B, d_C_shared, currentN);
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+
+            float sharedTime;
+            cudaEventElapsedTime(&sharedTime, start, stop);
+
+            sharedTotalTime += sharedTime;
+        }
+
+        float sharedAverageTime = sharedTotalTime / NUM_MEASUREMENT;
+
+        // Measure time for global and constant memory
+        float constantTotalTime = 0.0f;
+        for (int i = 0; i < NUM_MEASUREMENT; ++i) {
+            cudaEventRecord(start);
+            matrixMulGlobalConstant<<<gridDim, blockDim>>>(d_C_constant, currentN);
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+
+            float constantTime;
+            cudaEventElapsedTime(&constantTime, start, stop);
+
+            constantTotalTime += constantTime;
+        }
+
+        float constantAverageTime = constantTotalTime / NUM_MEASUREMENT;
+
+        // Write results to CSV file
+        csvFile << currentN << "," << globalAverageTime << "," << sharedAverageTime << "," << constantAverageTime << "\n";
+
+        // Cleanup for the current iteration
+        cudaFree(d_A);
+        cudaFree(d_B);
+        cudaFree(d_C_global);
+        cudaFree(d_C_shared);
+        cudaFree(d_C_constant);
+
+        delete[] h_A;
+        delete[] h_B;
+        delete[] h_C_global;
+        delete[] h_C_shared;
+        delete[] h_C_constant;
+
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
     }
 
     // Close CSV file
     csvFile.close();
-
-    // Copy the processed images back to the host
-    std::vector<unsigned char> h_image1(h_image.size());
-    std::vector<unsigned char> h_image2(h_image.size());
-    cudaMemcpy(h_image1.data(), d_image1, h_image.size(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_image2.data(), d_image2, h_image.size(), cudaMemcpyDeviceToHost);
-
-    // Write the output images
-    //writePPM(outputFilename1, h_image1.data(), width, height);
-    //writePPM(outputFilename2, h_image2.data(), width, height);
-
-    // Free allocated memory
-    cudaFree(d_image1);
-    cudaFree(d_image2);
-
+   
     return 0;
 }
+
+
+
