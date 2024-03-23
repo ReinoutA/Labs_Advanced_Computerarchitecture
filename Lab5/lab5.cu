@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <cstdlib>
 #include <fstream>
 #include <chrono>
@@ -14,18 +14,18 @@ __device__ void reductionOperation(int* arr, int j, unsigned int i, int operatio
         for (int k = 0; i + k * gridDim.x * blockDim.x + j < N; k++) {
             int index = i + k * gridDim.x * blockDim.x;
             switch (operation) {
-                case 0: // Max
-                    if (arr[2 * index] < arr[2 * index + j]) arr[2 * index] = arr[2 * index + j];
-                    break;
-                case 1: // Min
-                    if (arr[2 * index] > arr[2 * index + j]) arr[2 * index] = arr[2 * index + j];
-                    break;
-                case 2: // Sum
-                    arr[2 * index] += arr[2 * index + j];
-                    break;
-                case 3: // Multiply
-                    arr[2 * index] *= arr[2 * index + j];
-                    break;
+            case 0: // Max
+                if (arr[2 * index] < arr[2 * index + j]) arr[2 * index] = arr[2 * index + j];
+                break;
+            case 1: // Min
+                if (arr[2 * index] > arr[2 * index + j]) arr[2 * index] = arr[2 * index + j];
+                break;
+            case 2: // Sum
+                arr[2 * index] += arr[2 * index + j];
+                break;
+            case 3: // Multiply
+                arr[2 * index] *= arr[2 * index + j];
+                break;
             }
         }
         __syncthreads();
@@ -60,11 +60,11 @@ __global__ void reductionMultiply(int* arr) {
 int* generate(int size) {
     int* arr = new int[size];
     srand(time(nullptr));
-    
+
     for (int i = 0; i < size; i++) {
         arr[i] = (rand() % 10) + 1;
     }
-    
+
     return arr;
 }
 
@@ -73,7 +73,7 @@ float measureExecutionTime(void (*reductionFunc)(int*), int* data_cuda) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    reductionFunc<<<1, 48>>>(data_cuda);
+    reductionFunc << <1, 48 >> > (data_cuda);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     float milliseconds = 0;
@@ -83,24 +83,24 @@ float measureExecutionTime(void (*reductionFunc)(int*), int* data_cuda) {
     return milliseconds;
 }
 
-float async_reduction() {
+float async_reduction(int arraySize) {
     const auto start_time_async = std::chrono::steady_clock::now();
-    int* sum_array = generate(N);
+    int* sum_array = generate(arraySize);
     int* sum_cuda_data;
-    cudaMalloc(&sum_cuda_data, N * sizeof(int));
-    cudaMemcpy(sum_cuda_data, sum_array, N * sizeof(int), cudaMemcpyHostToDevice);
-    int* product_array = generate(N);
+    cudaMalloc(&sum_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(sum_cuda_data, sum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
+    int* product_array = generate(arraySize);
     int* prod_cuda_data;
-    cudaMalloc(&prod_cuda_data, N * sizeof(int));
-    cudaMemcpy(prod_cuda_data, product_array, N * sizeof(int), cudaMemcpyHostToDevice);
-    int* minimum_array = generate(N);
+    cudaMalloc(&prod_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(prod_cuda_data, product_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
+    int* minimum_array = generate(arraySize);
     int* min_cuda_data;
-    cudaMalloc(&min_cuda_data, N * sizeof(int));
-    cudaMemcpy(min_cuda_data, minimum_array, N * sizeof(int), cudaMemcpyHostToDevice);
-    int* maximum_array = generate(N);
+    cudaMalloc(&min_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(min_cuda_data, minimum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
+    int* maximum_array = generate(arraySize);
     int* max_cuda_data;
-    cudaMalloc(&max_cuda_data, N * sizeof(int));
-    cudaMemcpy(max_cuda_data, maximum_array, N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&max_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(max_cuda_data, maximum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
     float sum_time_async = measureExecutionTime(reductionSum, sum_cuda_data);
     float prod_time_async = measureExecutionTime(reductionMultiply, prod_cuda_data);
     float min_time_async = measureExecutionTime(reductionMin, min_cuda_data);
@@ -118,30 +118,30 @@ float async_reduction() {
     return seconds_async.count();
 }
 
-float sync_reduction() {
+float sync_reduction(int arraySize) {
     const auto start_time_sync = std::chrono::steady_clock::now();
-    int* sum_array = generate(N);
+    int* sum_array = generate(arraySize);
     int* sum_cuda_data;
-    cudaMalloc(&sum_cuda_data, N * sizeof(int));
-    cudaMemcpy(sum_cuda_data, sum_array, N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&sum_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(sum_cuda_data, sum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
     float sum_time_sync = measureExecutionTime(reductionSum, sum_cuda_data);
     cudaFree(sum_cuda_data);
-    int* product_array = generate(N);
+    int* product_array = generate(arraySize);
     int* prod_cuda_data;
-    cudaMalloc(&prod_cuda_data, N * sizeof(int));
-    cudaMemcpy(prod_cuda_data, product_array, N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&prod_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(prod_cuda_data, product_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
     float prod_time_sync = measureExecutionTime(reductionMultiply, prod_cuda_data);
     cudaFree(prod_cuda_data);
-    int* minimum_array = generate(N);
+    int* minimum_array = generate(arraySize);
     int* min_cuda_data;
-    cudaMalloc(&min_cuda_data, N * sizeof(int));
-    cudaMemcpy(min_cuda_data, minimum_array, N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&min_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(min_cuda_data, minimum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
     float min_time_sync = measureExecutionTime(reductionMin, min_cuda_data);
     cudaFree(min_cuda_data);
-    int* maximum_array = generate(N);
+    int* maximum_array = generate(arraySize);
     int* max_cuda_data;
-    cudaMalloc(&max_cuda_data, N * sizeof(int));
-    cudaMemcpy(max_cuda_data, maximum_array, N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&max_cuda_data, arraySize * sizeof(int));
+    cudaMemcpy(max_cuda_data, maximum_array, arraySize * sizeof(int), cudaMemcpyHostToDevice);
     float max_time_sync = measureExecutionTime(reductionMax, max_cuda_data);
     cudaFree(max_cuda_data);
     const auto end_time_sync = std::chrono::steady_clock::now();
@@ -164,21 +164,29 @@ int main() {
     }
 
     outputFile << "ArraySize,Sequential,Parallel" << std::endl;
+    bool first = true;
 
-    for (int arraySize = 1; arraySize <= N; arraySize += 256) {
+    for (int arraySize = 4; arraySize <= N; arraySize += 256) {
+        std::cout << arraySize << std::endl;
         sync = 0;
         async = 0;
 
-        outputFile << arraySize << ",";
 
-        for(int m = 0; m < NUM_MEASUREMENTS; m++)
-            sync += sync_reduction() * 1000;
-        outputFile << sync/NUM_MEASUREMENTS << ",";
+        for (int m = 0; m < NUM_MEASUREMENTS; m++)
+            sync += sync_reduction(arraySize) * 1000;
+        
 
-        for(int m = 0; m < NUM_MEASUREMENTS; m++)
-            async += async_reduction() * 1000;
+        for (int m = 0; m < NUM_MEASUREMENTS; m++)
+            async += async_reduction(arraySize) * 1000;
 
-        outputFile << async/NUM_MEASUREMENTS  << std::endl;
+        
+
+        if (!first) {
+            outputFile << arraySize << ",";
+            outputFile << sync / NUM_MEASUREMENTS << ",";
+            outputFile << async / NUM_MEASUREMENTS << std::endl;
+        }
+        else first = false;
     }
 
     outputFile.close();
